@@ -3,10 +3,8 @@ const cors = require('cors');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
-// Use puppeteer-core and the explicit browser installer
-const puppeteer = require('puppeteer-core');
-// Import the entire library to avoid destructuring issues
-const puppeteerBrowsers = require('@puppeteer/browsers');
+// Use the full puppeteer library
+const puppeteer = require('puppeteer');
 
 const app = express();
 const port = process.env.PORT || 3001;
@@ -46,17 +44,9 @@ async function runAutomation(options) {
 
   let browser = null;
   try {
-    console.log('...getting browser executable path.');
-    // Get the path from the imported library object and use the default cache path
-    const executablePath = puppeteerBrowsers.getExecutablePath({
-        browser: 'chrome',
-        buildId: 'stable'
-    });
-    console.log(`...browser executable found at: ${executablePath}`);
-    
     console.log('...launching browser with server settings.');
+    // The main puppeteer library will automatically find the browser downloaded by the build script.
     browser = await puppeteer.launch({ 
-        executablePath, // Provide the explicit path
         headless: true,
         args: [
             '--no-sandbox',
