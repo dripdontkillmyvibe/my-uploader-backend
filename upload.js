@@ -31,7 +31,7 @@ const LOGIN_BUTTON_SELECTOR = 'button[type="submit"]';
 const DROPDOWN_SELECTOR = '#display';
 const HIDDEN_FILE_INPUT_SELECTOR = '#fileInput1';
 const UPLOAD_SUBMIT_BUTTON_SELECTOR = '#pushBtn1';
-const STATUS_LOG_SELECTOR = '#statuslog';
+const STATUS_LOG_SELECTOR = '#statuslog'; // The selector for the log window
 
 // --- NEW ENDPOINT: To fetch display options ---
 app.post('/fetch-displays', async (req, res) => {
@@ -70,8 +70,11 @@ app.post('/fetch-displays', async (req, res) => {
 });
 
 
-// --- UPDATED ENDPOINT: To run the full automation ---
-app.post('/start-automation', async (req, res) => {
+// --- UPDATED ENDPOINT: To run the full automation synchronously ---
+app.post('/start-automation', upload.array('images'), async (req, res) => {
+  // --- DIAGNOSTIC LOG ---
+  console.log('Received body:', req.body); 
+  
   const { username, password, interval, displayValue, cycle } = req.body;
   const images = req.files;
   const isCycleMode = cycle === 'true';
@@ -105,7 +108,7 @@ async function runAutomation(options) {
   const { username, password, interval, displayValue, cycle, imageFiles } = options;
   console.log(`🤖 Full automation task received for display: ${displayValue}. Cycle mode: ${cycle}`);
   
-  const capturedLogs = [];
+  const capturedLogs = []; // Array to store logs from the portal
   const TIME_INTERVAL_SECONDS = parseInt(interval, 10);
   const ACTION_DELAY_SECONDS = 5;
 
@@ -148,11 +151,16 @@ async function runAutomation(options) {
             await page.click(UPLOAD_SUBMIT_BUTTON_SELECTOR);
             console.log('...clicked submit button.');
 
+            // Wait for the log element and capture its content
             await page.waitForSelector(STATUS_LOG_SELECTOR, { visible: true });
+            // Add a small delay for content to populate
             await new Promise(resolve => setTimeout(resolve, 2000)); 
             const logContent = await page.$eval(STATUS_LOG_SELECTOR, el => el.innerText);
             console.log(`...captured log: "${logContent}"`);
-            capturedLogs.push({ imageName: file.filename, log: logContent || "No log content found." });
+            capturedLogs.push({
+              imageName: file.filename,
+              log: logContent || "No log content found."
+            });
         }
 
         console.log(`🎉 Successfully submitted ${file.filename}!`);
