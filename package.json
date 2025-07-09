@@ -5,7 +5,8 @@
   "main": "upload.js",
   "scripts": {
     "start": "node upload.js",
-    "build": "npm install"
+    "build": "npm install && ls -R .cache && npm run postinstall",
+    "postinstall": "puppeteer browsers install chrome"
   },
   "keywords": [],
   "author": "",
