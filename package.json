@@ -5,16 +5,15 @@
   "main": "upload.js",
   "scripts": {
     "start": "node upload.js",
-    "build": "npm install && npx @puppeteer/browsers install chrome@stable"
+    "build": "npm install && npx puppeteer browsers install chrome"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "dependencies": {
-    "@puppeteer/browsers": "^2.2.0",
     "cors": "^2.8.5",
     "express": "^4.19.2",
     "multer": "^1.4.5-lts.1",
-    "puppeteer-core": "^22.12.1"
+    "puppeteer": "^22.12.1"
   }
 }
