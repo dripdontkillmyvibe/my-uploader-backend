@@ -45,9 +45,10 @@ async function runAutomation(options) {
   let browser = null;
   try {
     console.log('...launching browser with server settings.');
-    // The main puppeteer library will automatically find the browser downloaded by the build script.
+    // This new launch configuration explicitly uses the environment variable for the browser path.
     browser = await puppeteer.launch({ 
         headless: true,
+        executablePath: process.env.PUPPETEER_EXECUTABLE_PATH, // Use the path from the environment variable
         args: [
             '--no-sandbox',
             '--disable-setuid-sandbox',
