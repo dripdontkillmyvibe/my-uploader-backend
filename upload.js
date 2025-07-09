@@ -31,7 +31,7 @@ const LOGIN_BUTTON_SELECTOR = 'button[type="submit"]';
 const DROPDOWN_SELECTOR = '#display';
 const HIDDEN_FILE_INPUT_SELECTOR = '#fileInput1';
 const UPLOAD_SUBMIT_BUTTON_SELECTOR = '#pushBtn1';
-const STATUS_LOG_SELECTOR = '#statuslog'; // The selector for the log window
+const STATUS_LOG_SELECTOR = '#statuslog';
 
 // --- NEW ENDPOINT: To fetch display options ---
 app.post('/fetch-displays', async (req, res) => {
@@ -70,33 +70,42 @@ app.post('/fetch-displays', async (req, res) => {
 });
 
 
-// --- UPDATED ENDPOINT: To run the full automation synchronously ---
-app.post('/start-automation', upload.array('images'), async (req, res) => {
-  const { username, password, interval, displayValue } = req.body;
+// --- UPDATED ENDPOINT: To run the full automation ---
+app.post('/start-automation', async (req, res) => {
+  const { username, password, interval, displayValue, cycle } = req.body;
   const images = req.files;
+  const isCycleMode = cycle === 'true';
 
   if (!username || !password || !images || images.length === 0 || !displayValue) {
     return res.status(400).json({ message: 'Missing required fields, including a selected display.' });
   }
 
-  try {
-    // Now we wait for the automation to finish and get the logs back.
-    const capturedLogs = await runAutomation({ username, password, interval, displayValue, imageFiles: images });
-    res.status(200).json({ 
-      message: `Automation completed successfully for ${images.length} images.`,
-      logs: capturedLogs 
-    });
-  } catch (error) {
-    res.status(500).json({ message: error.message || 'An unknown error occurred during automation.' });
+  // If in cycle mode, run in the background and respond immediately.
+  if (isCycleMode) {
+    console.log('...starting automation in asynchronous cycle mode.');
+    runAutomation({ username, password, interval, displayValue, cycle: isCycleMode, imageFiles: images });
+    res.status(202).json({ message: `Automation started in cycle mode. Check server logs for progress.` });
+  } else {
+    // Otherwise, run synchronously and wait for the logs.
+    console.log('...starting automation in synchronous single-run mode.');
+    try {
+      const capturedLogs = await runAutomation({ username, password, interval, displayValue, cycle: isCycleMode, imageFiles: images });
+      res.status(200).json({ 
+        message: `Automation completed successfully for ${images.length} images.`,
+        logs: capturedLogs 
+      });
+    } catch (error) {
+      res.status(500).json({ message: error.message || 'An unknown error occurred during automation.' });
+    }
   }
 });
 
 
 async function runAutomation(options) {
-  const { username, password, interval, displayValue, imageFiles } = options;
-  console.log('🤖 Full automation task received for display:', displayValue);
+  const { username, password, interval, displayValue, cycle, imageFiles } = options;
+  console.log(`🤖 Full automation task received for display: ${displayValue}. Cycle mode: ${cycle}`);
   
-  const capturedLogs = []; // Array to store logs from the portal
+  const capturedLogs = [];
   const TIME_INTERVAL_SECONDS = parseInt(interval, 10);
   const ACTION_DELAY_SECONDS = 5;
 
@@ -121,52 +130,60 @@ async function runAutomation(options) {
     console.log('✅ Display selected.');
     await new Promise(resolve => setTimeout(resolve, ACTION_DELAY_SECONDS * 1000));
 
-    for (let i = 0; i < imageFiles.length; i++) {
-      const file = imageFiles[i];
-      const imagePath = path.join(uploadDir, file.filename);
-      console.log(`---`);
-      console.log(`[${i + 1}/${imageFiles.length}] Processing: ${file.filename}`);
-      
-      const fileInput = await page.waitForSelector(HIDDEN_FILE_INPUT_SELECTOR);
-      await fileInput.uploadFile(imagePath);
-      console.log(`...selected ${file.filename} for upload.`);
-      await new Promise(resolve => setTimeout(resolve, ACTION_DELAY_SECONDS * 1000));
-      
-      if (UPLOAD_SUBMIT_BUTTON_SELECTOR) {
-          await page.waitForSelector(UPLOAD_SUBMIT_BUTTON_SELECTOR, { visible: true });
-          await page.click(UPLOAD_SUBMIT_BUTTON_SELECTOR);
-          console.log('...clicked submit button.');
+    // Use a do-while loop to run at least once, and loop if cycle is true.
+    do {
+      for (let i = 0; i < imageFiles.length; i++) {
+        const file = imageFiles[i];
+        const imagePath = path.join(uploadDir, file.filename);
+        console.log(`---`);
+        console.log(`[${i + 1}/${imageFiles.length}] Processing: ${file.filename}`);
+        
+        const fileInput = await page.waitForSelector(HIDDEN_FILE_INPUT_SELECTOR);
+        await fileInput.uploadFile(imagePath);
+        console.log(`...selected ${file.filename} for upload.`);
+        await new Promise(resolve => setTimeout(resolve, ACTION_DELAY_SECONDS * 1000));
+        
+        if (UPLOAD_SUBMIT_BUTTON_SELECTOR) {
+            await page.waitForSelector(UPLOAD_SUBMIT_BUTTON_SELECTOR, { visible: true });
+            await page.click(UPLOAD_SUBMIT_BUTTON_SELECTOR);
+            console.log('...clicked submit button.');
 
-          // Wait for the log element and capture its content
-          await page.waitForSelector(STATUS_LOG_SELECTOR, { visible: true });
-          // Add a small delay for content to populate
-          await new Promise(resolve => setTimeout(resolve, 2000)); 
-          const logContent = await page.$eval(STATUS_LOG_SELECTOR, el => el.innerText);
-          console.log(`...captured log: "${logContent}"`);
-          capturedLogs.push({
-            imageName: file.filename,
-            log: logContent || "No log content found."
-          });
-      }
+            await page.waitForSelector(STATUS_LOG_SELECTOR, { visible: true });
+            await new Promise(resolve => setTimeout(resolve, 2000)); 
+            const logContent = await page.$eval(STATUS_LOG_SELECTOR, el => el.innerText);
+            console.log(`...captured log: "${logContent}"`);
+            capturedLogs.push({ imageName: file.filename, log: logContent || "No log content found." });
+        }
 
-      console.log(`🎉 Successfully submitted ${file.filename}!`);
-      if (i < imageFiles.length - 1) {
-        console.log(`...waiting for ${TIME_INTERVAL_SECONDS}s...`);
-        await new Promise(resolve => setTimeout(resolve, TIME_INTERVAL_SECONDS * 1000));
+        console.log(`🎉 Successfully submitted ${file.filename}!`);
+        // Don't wait after the last image if we are not cycling
+        if (cycle || i < imageFiles.length - 1) {
+          console.log(`...waiting for ${TIME_INTERVAL_SECONDS}s...`);
+          await new Promise(resolve => setTimeout(resolve, TIME_INTERVAL_SECONDS * 1000));
+        }
       }
-    }
-    return capturedLogs; // Return the array of logs on success
+      if(cycle) {
+        console.log('...cycling back to the first image.');
+      }
+    } while (cycle);
+    
+    return capturedLogs;
   } catch (error) {
     console.error('❌ A critical error occurred during the automation process:', error);
-    throw error; // Throw the error up to the endpoint handler
+    if (!cycle) {
+      throw error; // Only throw error if not in cycle mode to avoid crashing the background process
+    }
   } finally {
     if (browser) await browser.close();
-    imageFiles.forEach(file => {
-        fs.unlink(path.join(uploadDir, file.filename), err => {
-            if (err) console.error(`Error deleting file: ${file.filename}`, err);
-        });
-    });
-    console.log('...automation task finished and cleaned up temporary files.');
+    // In cycle mode, files are never cleaned up. In single-run, they are.
+    if(!cycle) {
+      imageFiles.forEach(file => {
+          fs.unlink(path.join(uploadDir, file.filename), err => {
+              if (err) console.error(`Error deleting file: ${file.filename}`, err);
+          });
+      });
+      console.log('...automation task finished and cleaned up temporary files.');
+    }
   }
 }
 
