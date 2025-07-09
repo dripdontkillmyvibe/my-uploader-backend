@@ -31,6 +31,7 @@ const LOGIN_BUTTON_SELECTOR = 'button[type="submit"]';
 const DROPDOWN_SELECTOR = '#display';
 const HIDDEN_FILE_INPUT_SELECTOR = '#fileInput1';
 const UPLOAD_SUBMIT_BUTTON_SELECTOR = '#pushBtn1';
+const STATUS_LOG_SELECTOR = '#statuslog'; // The selector for the log window
 
 // --- NEW ENDPOINT: To fetch display options ---
 app.post('/fetch-displays', async (req, res) => {
@@ -56,7 +57,7 @@ app.post('/fetch-displays', async (req, res) => {
     const options = await page.$$eval(`${DROPDOWN_SELECTOR} option`, opts =>
       opts
         .map(o => ({ value: o.value, text: o.innerText }))
-        .filter(o => o.value && o.value !== "0") // Filter out the placeholder "--Select Display--"
+        .filter(o => o.value && o.value !== "0")
     );
     console.log(`...found ${options.length} displays.`);
     res.json(options);
@@ -69,19 +70,25 @@ app.post('/fetch-displays', async (req, res) => {
 });
 
 
-// --- UPDATED ENDPOINT: To run the full automation ---
-app.post('/start-automation', upload.array('images'), (req, res) => {
-  const { username, password, interval, displayValue } = req.body; // Now accepts displayValue
+// --- UPDATED ENDPOINT: To run the full automation synchronously ---
+app.post('/start-automation', upload.array('images'), async (req, res) => {
+  const { username, password, interval, displayValue } = req.body;
   const images = req.files;
 
   if (!username || !password || !images || images.length === 0 || !displayValue) {
     return res.status(400).json({ message: 'Missing required fields, including a selected display.' });
   }
 
-  // Start automation in the background
-  runAutomation({ username, password, interval, displayValue, imageFiles: images });
-
-  res.status(202).json({ message: `Automation accepted for display "${displayValue}". Check server logs for progress.` });
+  try {
+    // Now we wait for the automation to finish and get the logs back.
+    const capturedLogs = await runAutomation({ username, password, interval, displayValue, imageFiles: images });
+    res.status(200).json({ 
+      message: `Automation completed successfully for ${images.length} images.`,
+      logs: capturedLogs 
+    });
+  } catch (error) {
+    res.status(500).json({ message: error.message || 'An unknown error occurred during automation.' });
+  }
 });
 
 
@@ -89,6 +96,7 @@ async function runAutomation(options) {
   const { username, password, interval, displayValue, imageFiles } = options;
   console.log('🤖 Full automation task received for display:', displayValue);
   
+  const capturedLogs = []; // Array to store logs from the portal
   const TIME_INTERVAL_SECONDS = parseInt(interval, 10);
   const ACTION_DELAY_SECONDS = 5;
 
@@ -109,7 +117,7 @@ async function runAutomation(options) {
 
     console.log(`...selecting user-chosen display: ${displayValue}`);
     await page.waitForSelector(DROPDOWN_SELECTOR);
-    await page.select(DROPDOWN_SELECTOR, displayValue); // Use the provided display value
+    await page.select(DROPDOWN_SELECTOR, displayValue);
     console.log('✅ Display selected.');
     await new Promise(resolve => setTimeout(resolve, ACTION_DELAY_SECONDS * 1000));
 
@@ -128,6 +136,17 @@ async function runAutomation(options) {
           await page.waitForSelector(UPLOAD_SUBMIT_BUTTON_SELECTOR, { visible: true });
           await page.click(UPLOAD_SUBMIT_BUTTON_SELECTOR);
           console.log('...clicked submit button.');
+
+          // Wait for the log element and capture its content
+          await page.waitForSelector(STATUS_LOG_SELECTOR, { visible: true });
+          // Add a small delay for content to populate
+          await new Promise(resolve => setTimeout(resolve, 2000)); 
+          const logContent = await page.$eval(STATUS_LOG_SELECTOR, el => el.innerText);
+          console.log(`...captured log: "${logContent}"`);
+          capturedLogs.push({
+            imageName: file.filename,
+            log: logContent || "No log content found."
+          });
       }
 
       console.log(`🎉 Successfully submitted ${file.filename}!`);
@@ -136,8 +155,10 @@ async function runAutomation(options) {
         await new Promise(resolve => setTimeout(resolve, TIME_INTERVAL_SECONDS * 1000));
       }
     }
+    return capturedLogs; // Return the array of logs on success
   } catch (error) {
     console.error('❌ A critical error occurred during the automation process:', error);
+    throw error; // Throw the error up to the endpoint handler
   } finally {
     if (browser) await browser.close();
     imageFiles.forEach(file => {
