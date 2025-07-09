@@ -3,7 +3,9 @@ const cors = require('cors');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
-const puppeteer = require('puppeteer');
+// Use puppeteer-core and the explicit browser installer
+const puppeteer = require('puppeteer-core');
+const { install, getExecutablePath } = require('@puppeteer/browsers');
 
 const app = express();
 const port = process.env.PORT || 3001;
@@ -43,13 +45,23 @@ async function runAutomation(options) {
 
   let browser = null;
   try {
+    console.log('...getting browser executable path.');
+    // Explicitly get the path to the downloaded browser
+    const executablePath = getExecutablePath({
+        browser: 'chrome',
+        buildId: 'stable',
+        cacheDir: path.resolve('.cache/puppeteer') // Use a local cache directory
+    });
+    console.log(`...browser executable found at: ${executablePath}`);
+    
     console.log('...launching browser with server settings.');
     browser = await puppeteer.launch({ 
+        executablePath, // Provide the explicit path
         headless: true,
         args: [
             '--no-sandbox',
             '--disable-setuid-sandbox',
-            '--disable-dev-shm-usage', // Common fix for server environments
+            '--disable-dev-shm-usage',
             '--single-process'
         ]
     });
