@@ -3,8 +3,7 @@ const cors = require('cors');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
-// Use the full puppeteer library
-const puppeteer = require('puppeteer');
+const puppeteer = require('puppeteer-core');
 
 const app = express();
 const port = process.env.PORT || 3001;
@@ -44,11 +43,14 @@ async function runAutomation(options) {
 
   let browser = null;
   try {
+    // Manually construct the path to the browser executable inside the folder we created.
+    const executablePath = path.join(__dirname, '.local-chromium', 'chrome-linux64', 'chrome');
+    console.log(`...using constructed executable path: ${executablePath}`);
+    
     console.log('...launching browser with server settings.');
-    // This new launch configuration explicitly uses the environment variable for the browser path.
     browser = await puppeteer.launch({ 
+        executablePath, // Provide the explicit path
         headless: true,
-        executablePath: process.env.PUPPETEER_EXECUTABLE_PATH, // Use the path from the environment variable
         args: [
             '--no-sandbox',
             '--disable-setuid-sandbox',
