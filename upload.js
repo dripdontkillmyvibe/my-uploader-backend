@@ -24,6 +24,9 @@ const storage = multer.diskStorage({
 });
 const upload = multer({ storage: storage });
 
+// --- Global variable to hold the browser instance between runs ---
+let browser = null;
+
 // --- THE AUTOMATION LOGIC ---
 async function runAutomation(options) {
   const { username, password, interval, imageFiles } = options;
@@ -42,11 +45,22 @@ async function runAutomation(options) {
   const HIDDEN_FILE_INPUT_SELECTOR = '#fileInput1';
   const UPLOAD_SUBMIT_BUTTON_SELECTOR = '#pushBtn1';
 
-  let browser = null;
+  // If a browser is already open from a previous task, close it.
+  if (browser) {
+    console.log('...closing browser from previous task.');
+    try {
+      await browser.close();
+    } catch (e) {
+      console.log('...previous browser was already closed or disconnected.');
+    }
+    browser = null;
+  }
+
   try {
     console.log('...launching browser with server settings.');
     // The main puppeteer library will now automatically find the browser
     // thanks to the .puppeteerrc.cjs configuration file.
+    // We assign the new instance to our global variable.
     browser = await puppeteer.launch({ 
         headless: true,
         args: [
@@ -111,11 +125,17 @@ async function runAutomation(options) {
         await new Promise(resolve => setTimeout(resolve, TIME_INTERVAL_SECONDS * 1000));
       }
     }
+    console.log('✅ All uploads complete. Browser will remain open.');
 
   } catch (error) {
     console.error('❌ A critical error occurred during the automation process:', error);
+    // If an error occurs, close the browser to ensure a clean state for the next run.
+    if (browser) {
+      await browser.close();
+      browser = null;
+    }
   } finally {
-    if (browser) await browser.close();
+    // This block now ONLY handles file cleanup. The browser is intentionally left open on success.
     imageFiles.forEach(file => {
         fs.unlink(path.join(uploadDir, file.filename), err => {
             if (err) console.error(`Error deleting file: ${file.filename}`, err);
