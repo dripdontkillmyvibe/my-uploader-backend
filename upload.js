@@ -178,7 +178,6 @@ app.get('/job-status/:userId', async (req, res) => {
     }
 });
 
-// NEW: Endpoint to stop a job
 app.post('/stop-job/:jobId', async (req, res) => {
     const { jobId } = req.params;
     if (!jobId) {
@@ -223,25 +222,25 @@ async function processJob(job) {
         await page.type(PASSWORD_SELECTOR, credentials.password);
         await Promise.all([page.waitForNavigation({ waitUntil: 'networkidle2' }), page.click(LOGIN_BUTTON_SELECTOR)]);
         
-        await client.query("UPDATE jobs SET progress = 'Selecting display...' WHERE id = $1", [job.id]);
-        await page.waitForSelector(DROPDOWN_SELECTOR);
-        await page.select(DROPDOWN_SELECTOR, settings.displayValue);
-
         do {
           for (let i = 0; i < images.length; i++) {
-              // --- CANCELLATION CHECK ---
               const jobCheckResult = await client.query('SELECT status FROM jobs WHERE id = $1', [job.id]);
               if (jobCheckResult.rows[0].status !== 'running') {
                   console.log(`Job ${job.id} status is now '${jobCheckResult.rows[0].status}'. Halting execution.`);
-                  return; // Exit the function entirely.
+                  return;
               }
-              // --- END CANCELLATION CHECK ---
+
+              // FIX: Re-select the display inside the loop to ensure the page state is correct for each upload.
+              await client.query("UPDATE jobs SET progress = 'Selecting display...' WHERE id = $1", [job.id]);
+              await page.waitForSelector(DROPDOWN_SELECTOR);
+              await page.select(DROPDOWN_SELECTOR, settings.displayValue);
 
               const image = images[i];
               const progressMessage = `Uploading image ${i + 1} of ${images.length}: ${image.originalname}`;
               await client.query(`UPDATE jobs SET progress = $1 WHERE id = $2`, [progressMessage, job.id]);
               
-              const fileInput = await page.waitForSelector(HIDDEN_FILE_INPUT_SELECTOR);
+              // FIX: Wait for the file input selector to be available after selecting the display.
+              const fileInput = await page.waitForSelector(HIDDEN_FILE_INPUT_SELECTOR, { timeout: 30000 });
               await fileInput.uploadFile(image.path);
               
               await page.waitForFunction(
