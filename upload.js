@@ -60,6 +60,12 @@ const PREVIEW_AREA_SELECTOR = '#preview1';
 const HIDDEN_FILE_INPUT_SELECTOR = '#fileInput1';
 const UPLOAD_SUBMIT_BUTTON_SELECTOR = '#pushBtn1';
 
+// --- Shared puppeteer launch options ---
+const puppeteerLaunchOptions = {
+    headless: true,
+    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
+};
+
 // --- Interactive API Endpoints ---
 app.post('/fetch-displays', async (req, res) => {
     const { username, password } = req.body;
@@ -68,7 +74,7 @@ app.post('/fetch-displays', async (req, res) => {
     console.log('🤖 Fetching displays for user:', username);
     let browser = null;
     try {
-        browser = await puppeteer.launch({ headless: true, args: ['--no-sandbox', '--disable-setuid-sandbox'] });
+        browser = await puppeteer.launch(puppeteerLaunchOptions);
         const page = await browser.newPage();
         await page.goto(LOGIN_URL, { waitUntil: 'networkidle2' });
         await page.type(USERNAME_SELECTOR, username);
@@ -91,7 +97,7 @@ app.post('/fetch-display-details', async (req, res) => {
 
     let browser = null;
     try {
-        browser = await puppeteer.launch({ headless: true, args: ['--no-sandbox', '--disable-setuid-sandbox'] });
+        browser = await puppeteer.launch(puppeteerLaunchOptions);
         const page = await browser.newPage();
         await page.goto(LOGIN_URL, { waitUntil: 'networkidle2' });
         await page.type(USERNAME_SELECTOR, username);
@@ -177,7 +183,7 @@ async function processJob(job) {
     try {
         await client.query(`UPDATE jobs SET status = 'running', progress = 'Launching browser...' WHERE id = $1`, [job.id]);
         
-        browser = await puppeteer.launch({ headless: true, args: ['--no-sandbox', '--disable-setuid-sandbox'] });
+        browser = await puppeteer.launch(puppeteerLaunchOptions);
         const page = await browser.newPage();
         
         const credentials = job.portal_credentials;
@@ -203,7 +209,9 @@ async function processJob(job) {
               await fileInput.uploadFile(image.path);
               await page.click(UPLOAD_SUBMIT_BUTTON_SELECTOR);
               
-              await new Promise(resolve => setTimeout(resolve, settings.interval * 1000));
+              // Wait for the interval
+              const waitTime = (settings.interval || 30) * 1000; // Default to 30s if not set
+              await new Promise(resolve => setTimeout(resolve, waitTime));
           }
         } while (settings.cycle);
 
@@ -213,6 +221,7 @@ async function processJob(job) {
         await client.query(`UPDATE jobs SET status = 'failed', progress = 'An error occurred: ${error.message}' WHERE id = $1`, [job.id]);
     } finally {
         if (browser) await browser.close();
+        // Clean up uploaded files
         job.images.forEach(img => fs.unlink(img.path, (err) => {
             if(err) console.error("Error deleting file:", img.path, err);
         }));
@@ -227,7 +236,8 @@ async function checkJobs() {
         if (result.rows.length > 0) {
             const job = result.rows[0];
             console.log(`Found job ${job.id} to process.`);
-            await processJob(job);
+            // Don't wait for the job to finish, let it run in the background
+            processJob(job);
         }
     } finally {
         client.release();
