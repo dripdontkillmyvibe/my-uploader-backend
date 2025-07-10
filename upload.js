@@ -106,7 +106,7 @@ app.post('/fetch-display-details', async (req, res) => {
         await Promise.all([page.waitForNavigation({ waitUntil: 'networkidle2' }), page.click(LOGIN_BUTTON_SELECTOR)]);
         await page.waitForSelector(DROPDOWN_SELECTOR);
         await page.select(DROPDOWN_SELECTOR, displayValue);
-        await page.waitForTimeout(2000); // Using puppeteer's built-in wait
+        await new Promise(resolve => setTimeout(resolve, 2000)); // Using standard JS timeout
 
         const imageUrl = await page.$eval(PREVIEW_AREA_SELECTOR, el => {
             const style = el.style.backgroundImage;
@@ -212,7 +212,7 @@ async function processJob(job) {
               // Wait for the upload button to become visible and interactive.
               await page.waitForSelector(UPLOAD_SUBMIT_BUTTON_SELECTOR, { visible: true });
               // Add a small delay to handle any animations or brief overlays after file selection.
-              await page.waitForTimeout(1000);
+              await new Promise(resolve => setTimeout(resolve, 1000));
               await page.click(UPLOAD_SUBMIT_BUTTON_SELECTOR);
               
               const waitTime = (parseInt(settings.interval, 10) || 30) * 1000;
