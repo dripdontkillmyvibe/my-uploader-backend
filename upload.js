@@ -106,7 +106,7 @@ app.post('/fetch-display-details', async (req, res) => {
         await Promise.all([page.waitForNavigation({ waitUntil: 'networkidle2' }), page.click(LOGIN_BUTTON_SELECTOR)]);
         await page.waitForSelector(DROPDOWN_SELECTOR);
         await page.select(DROPDOWN_SELECTOR, displayValue);
-        await new Promise(resolve => setTimeout(resolve, 2000));
+        await page.waitForTimeout(2000); // Using puppeteer's built-in wait
 
         const imageUrl = await page.$eval(PREVIEW_AREA_SELECTOR, el => {
             const style = el.style.backgroundImage;
@@ -208,6 +208,11 @@ async function processJob(job) {
               
               const fileInput = await page.waitForSelector(HIDDEN_FILE_INPUT_SELECTOR);
               await fileInput.uploadFile(image.path);
+              
+              // Wait for the upload button to become visible and interactive.
+              await page.waitForSelector(UPLOAD_SUBMIT_BUTTON_SELECTOR, { visible: true });
+              // Add a small delay to handle any animations or brief overlays after file selection.
+              await page.waitForTimeout(1000);
               await page.click(UPLOAD_SUBMIT_BUTTON_SELECTOR);
               
               const waitTime = (parseInt(settings.interval, 10) || 30) * 1000;
@@ -218,7 +223,11 @@ async function processJob(job) {
         await client.query("UPDATE jobs SET status = 'completed', progress = 'All images uploaded successfully.' WHERE id = $1", [job.id]);
     } catch (error) {
         console.error(`Error processing job ${job.id}:`, error);
-        await client.query("UPDATE jobs SET status = 'failed', progress = $2 WHERE id = $1", [job.id, `An error occurred: ${error.message}`]);
+        // Provide a more user-friendly error message in the database.
+        const errorMessage = error.message.includes('click') || error.message.includes('clickable')
+            ? 'A button on the page was not clickable. The website layout may have changed.'
+            : error.message;
+        await client.query("UPDATE jobs SET status = 'failed', progress = $2 WHERE id = $1", [job.id, `An error occurred: ${errorMessage}`]);
     } finally {
         if (browser) await browser.close();
         job.images.forEach(img => fs.unlink(img.path, (err) => {
