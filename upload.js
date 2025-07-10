@@ -209,11 +209,36 @@ async function processJob(job) {
               const fileInput = await page.waitForSelector(HIDDEN_FILE_INPUT_SELECTOR);
               await fileInput.uploadFile(image.path);
               
-              // Wait for the upload button to become visible and interactive.
-              await page.waitForSelector(UPLOAD_SUBMIT_BUTTON_SELECTOR, { visible: true });
-              // Add a small delay to handle any animations or brief overlays after file selection.
-              await new Promise(resolve => setTimeout(resolve, 1000));
-              await page.click(UPLOAD_SUBMIT_BUTTON_SELECTOR);
+              // Wait for the upload button to be enabled.
+              await page.waitForFunction(
+                (selector) => {
+                  const el = document.querySelector(selector);
+                  return el && !el.disabled;
+                },
+                { timeout: 15000 }, // Increased timeout
+                UPLOAD_SUBMIT_BUTTON_SELECTOR
+              );
+
+              // Retry clicking mechanism to handle transient overlays
+              let clickSuccessful = false;
+              for (let attempt = 0; attempt < 5; attempt++) {
+                  try {
+                      await page.click(UPLOAD_SUBMIT_BUTTON_SELECTOR);
+                      clickSuccessful = true;
+                      break; // Exit loop if click is successful
+                  } catch (e) {
+                      if (e.message.includes('not clickable')) {
+                          console.log(`Attempt ${attempt + 1}: Upload button not clickable, retrying...`);
+                          await new Promise(resolve => setTimeout(resolve, 500)); // Wait before retrying
+                      } else {
+                          throw e; // Re-throw other errors
+                      }
+                  }
+              }
+
+              if (!clickSuccessful) {
+                  throw new Error(`The upload button was enabled but not clickable after several retries. It might be covered by another element.`);
+              }
               
               const waitTime = (parseInt(settings.interval, 10) || 30) * 1000;
               await new Promise(resolve => setTimeout(resolve, waitTime));
@@ -225,7 +250,7 @@ async function processJob(job) {
         console.error(`Error processing job ${job.id}:`, error);
         // Provide a more user-friendly error message in the database.
         const errorMessage = error.message.includes('click') || error.message.includes('clickable')
-            ? 'A button on the page was not clickable. The website layout may have changed.'
+            ? `A button on the page was not clickable. The website layout may have changed or an overlay was present. (Selector: ${UPLOAD_SUBMIT_BUTTON_SELECTOR})`
             : error.message;
         await client.query("UPDATE jobs SET status = 'failed', progress = $2 WHERE id = $1", [job.id, `An error occurred: ${errorMessage}`]);
     } finally {
