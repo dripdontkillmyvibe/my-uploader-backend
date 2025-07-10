@@ -245,7 +245,6 @@ async function processJob(job) {
               
               const fileInput = await page.waitForSelector(HIDDEN_FILE_INPUT_SELECTOR, { timeout: 30000 });
               
-              // Get the current log content before uploading
               const initialLogContent = await page.$eval(STATUS_LOG_SELECTOR, el => el.innerHTML).catch(() => '');
 
               await fileInput.uploadFile(image.path);
@@ -281,13 +280,12 @@ async function processJob(job) {
               
               await client.query("UPDATE jobs SET progress = 'Waiting for upload confirmation...' WHERE id = $1", [job.id]);
               
-              // FIX: Wait for the log content to CHANGE, instead of looking for a specific message.
               await page.waitForFunction(
                 (selector, initialContent) => {
                     const logEl = document.querySelector(selector);
                     return logEl && logEl.innerHTML !== initialContent;
                 },
-                { timeout: 120000 }, // Increased timeout to 2 minutes
+                { timeout: 120000 },
                 STATUS_LOG_SELECTOR,
                 initialLogContent
               ).catch(e => {
@@ -297,7 +295,6 @@ async function processJob(job) {
               const logs = await page.$eval(STATUS_LOG_SELECTOR, el => el.innerHTML);
               await client.query("UPDATE jobs SET logs = $1 WHERE id = $2", [logs, job.id]);
 
-              // Check if the upload actually failed on the portal side
               if (logs.toLowerCase().includes('failed') || logs.toLowerCase().includes('error')) {
                   throw new Error('The portal reported an error during the upload. Check the status log for details.');
               }
