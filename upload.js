@@ -4,11 +4,16 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 const puppeteer = require('puppeteer');
+const http = require('http');
+const { WebSocketServer } = require('ws');
 
 const app = express();
 const port = process.env.PORT || 3001;
 
-// --- Middleware ---
+// --- Server & Middleware Setup ---
+const server = http.createServer(app);
+const wss = new WebSocketServer({ server });
+
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
@@ -31,170 +36,204 @@ const LOGIN_BUTTON_SELECTOR = 'button[type="submit"]';
 const DROPDOWN_SELECTOR = '#display';
 const HIDDEN_FILE_INPUT_SELECTOR = '#fileInput1';
 const UPLOAD_SUBMIT_BUTTON_SELECTOR = '#pushBtn1';
-const STATUS_LOG_SELECTOR = '#statuslog'; // The selector for the log window
+const STATUS_LOG_SELECTOR = '#statuslog';
+const PREVIEW_AREA_SELECTOR = '#preview1';
 
-// --- NEW ENDPOINT: To fetch display options ---
+// --- HTTP Endpoints ---
+
+// Endpoint to fetch initial display options
 app.post('/fetch-displays', async (req, res) => {
-  const { username, password } = req.body;
-  if (!username || !password) {
-    return res.status(400).json({ message: 'Username and password are required.' });
-  }
-
-  console.log('🤖 Fetching displays for user:', username);
-  let browser = null;
-  try {
-    browser = await puppeteer.launch({ headless: true, args: ['--no-sandbox', '--disable-setuid-sandbox'] });
-    const page = await browser.newPage();
-    await page.goto(LOGIN_URL, { waitUntil: 'networkidle2' });
-    await page.type(USERNAME_SELECTOR, username);
-    await page.type(PASSWORD_SELECTOR, password);
-    await Promise.all([
-      page.waitForNavigation({ waitUntil: 'networkidle2' }),
-      page.click(LOGIN_BUTTON_SELECTOR),
-    ]);
-    console.log('...login successful, finding dropdown.');
-    await page.waitForSelector(DROPDOWN_SELECTOR);
-    const options = await page.$$eval(`${DROPDOWN_SELECTOR} option`, opts =>
-      opts
-        .map(o => ({ value: o.value, text: o.innerText }))
-        .filter(o => o.value && o.value !== "0")
-    );
-    console.log(`...found ${options.length} displays.`);
-    res.json(options);
-  } catch (error) {
-    console.error('❌ Error fetching displays:', error);
-    res.status(500).json({ message: 'Failed to fetch displays. Please check credentials.' });
-  } finally {
-    if (browser) await browser.close();
-  }
-});
-
-
-// --- UPDATED ENDPOINT: To run the full automation synchronously ---
-app.post('/start-automation', upload.array('images'), async (req, res) => {
-  // --- DIAGNOSTIC LOG ---
-  console.log('Received body:', req.body); 
-  
-  const { username, password, interval, displayValue, cycle } = req.body;
-  const images = req.files;
-  const isCycleMode = cycle === 'true';
-
-  if (!username || !password || !images || images.length === 0 || !displayValue) {
-    return res.status(400).json({ message: 'Missing required fields, including a selected display.' });
-  }
-
-  // If in cycle mode, run in the background and respond immediately.
-  if (isCycleMode) {
-    console.log('...starting automation in asynchronous cycle mode.');
-    runAutomation({ username, password, interval, displayValue, cycle: isCycleMode, imageFiles: images });
-    res.status(202).json({ message: `Automation started in cycle mode. Check server logs for progress.` });
-  } else {
-    // Otherwise, run synchronously and wait for the logs.
-    console.log('...starting automation in synchronous single-run mode.');
+    // ... (This endpoint remains the same as the previous version)
+    const { username, password } = req.body;
+    if (!username || !password) return res.status(400).json({ message: 'Username and password are required.' });
+    console.log('🤖 Fetching displays for user:', username);
+    let browser = null;
     try {
-      const capturedLogs = await runAutomation({ username, password, interval, displayValue, cycle: isCycleMode, imageFiles: images });
-      res.status(200).json({ 
-        message: `Automation completed successfully for ${images.length} images.`,
-        logs: capturedLogs 
-      });
+        browser = await puppeteer.launch({ headless: true, args: ['--no-sandbox', '--disable-setuid-sandbox'] });
+        const page = await browser.newPage();
+        await page.goto(LOGIN_URL, { waitUntil: 'networkidle2' });
+        await page.type(USERNAME_SELECTOR, username);
+        await page.type(PASSWORD_SELECTOR, password);
+        await Promise.all([page.waitForNavigation({ waitUntil: 'networkidle2' }), page.click(LOGIN_BUTTON_SELECTOR)]);
+        await page.waitForSelector(DROPDOWN_SELECTOR);
+        const options = await page.$$eval(`${DROPDOWN_SELECTOR} option`, opts => opts.map(o => ({ value: o.value, text: o.innerText })).filter(o => o.value && o.value !== "0"));
+        res.json(options);
     } catch (error) {
-      res.status(500).json({ message: error.message || 'An unknown error occurred during automation.' });
+        console.error('❌ Error fetching displays:', error);
+        res.status(500).json({ message: 'Failed to fetch displays. Please check credentials.' });
+    } finally {
+        if (browser) await browser.close();
     }
-  }
 });
 
+// NEW Endpoint to fetch details (like current image) for a specific display
+app.post('/fetch-display-details', async (req, res) => {
+    const { username, password, displayValue } = req.body;
+    if (!username || !password || !displayValue) return res.status(400).json({ message: 'Missing required fields.' });
 
-async function runAutomation(options) {
-  const { username, password, interval, displayValue, cycle, imageFiles } = options;
-  console.log(`🤖 Full automation task received for display: ${displayValue}. Cycle mode: ${cycle}`);
-  
-  const capturedLogs = []; // Array to store logs from the portal
-  const TIME_INTERVAL_SECONDS = parseInt(interval, 10);
-  const ACTION_DELAY_SECONDS = 5;
+    console.log('🤖 Fetching details for display:', displayValue);
+    let browser = null;
+    try {
+        browser = await puppeteer.launch({ headless: true, args: ['--no-sandbox', '--disable-setuid-sandbox'] });
+        const page = await browser.newPage();
+        await page.goto(LOGIN_URL, { waitUntil: 'networkidle2' });
+        await page.type(USERNAME_SELECTOR, username);
+        await page.type(PASSWORD_SELECTOR, password);
+        await Promise.all([page.waitForNavigation({ waitUntil: 'networkidle2' }), page.click(LOGIN_BUTTON_SELECTOR)]);
+        await page.waitForSelector(DROPDOWN_SELECTOR);
+        await page.select(DROPDOWN_SELECTOR, displayValue);
+        await new Promise(resolve => setTimeout(resolve, 2000)); // Wait for potential AJAX update
 
-  let browser = null;
-  try {
-    browser = await puppeteer.launch({ headless: true, args: ['--no-sandbox', '--disable-setuid-sandbox'] });
-    const page = await browser.newPage();
-    await page.setViewport({ width: 1280, height: 800 });
+        const imageUrl = await page.$eval(PREVIEW_AREA_SELECTOR, el => {
+            const style = el.style.backgroundImage;
+            const match = style.match(/url\("?(.+?)"?\)/);
+            return match ? match[1] : null;
+        });
 
-    await page.goto(LOGIN_URL, { waitUntil: 'networkidle2' });
-    await page.type(USERNAME_SELECTOR, username);
-    await page.type(PASSWORD_SELECTOR, password);
-    await Promise.all([
-      page.waitForNavigation({ waitUntil: 'networkidle2' }),
-      page.click(LOGIN_BUTTON_SELECTOR),
-    ]);
-    console.log('✅ Login Successful!');
+        if (imageUrl) {
+            const fullUrl = new URL(imageUrl, LOGIN_URL).href;
+            console.log('...found image URL:', fullUrl);
+            res.json({ imageUrl: fullUrl });
+        } else {
+            res.json({ imageUrl: null });
+        }
+    } catch (error) {
+        console.error('❌ Error fetching display details:', error);
+        res.status(500).json({ message: 'Failed to fetch display details.' });
+    } finally {
+        if (browser) await browser.close();
+    }
+});
 
-    console.log(`...selecting user-chosen display: ${displayValue}`);
-    await page.waitForSelector(DROPDOWN_SELECTOR);
-    await page.select(DROPDOWN_SELECTOR, displayValue);
-    console.log('✅ Display selected.');
-    await new Promise(resolve => setTimeout(resolve, ACTION_DELAY_SECONDS * 1000));
+// --- WebSocket Logic for Live Automation ---
+wss.on('connection', ws => {
+    console.log('🔗 Client connected via WebSocket');
+    ws.on('message', async message => {
+        const data = JSON.parse(message);
+        if (data.type === 'start-automation') {
+            // Use multer middleware manually for WebSocket requests
+            const mockReq = { body: data.payload, files: [] };
+            const mockRes = {}; // Not used
+            const uploader = upload.array('images');
 
-    // Use a do-while loop to run at least once, and loop if cycle is true.
-    do {
-      for (let i = 0; i < imageFiles.length; i++) {
-        const file = imageFiles[i];
-        const imagePath = path.join(uploadDir, file.filename);
-        console.log(`---`);
-        console.log(`[${i + 1}/${imageFiles.length}] Processing: ${file.filename}`);
-        
-        const fileInput = await page.waitForSelector(HIDDEN_FILE_INPUT_SELECTOR);
-        await fileInput.uploadFile(imagePath);
-        console.log(`...selected ${file.filename} for upload.`);
-        await new Promise(resolve => setTimeout(resolve, ACTION_DELAY_SECONDS * 1000));
-        
-        if (UPLOAD_SUBMIT_BUTTON_SELECTOR) {
-            await page.waitForSelector(UPLOAD_SUBMIT_BUTTON_SELECTOR, { visible: true });
-            await page.click(UPLOAD_SUBMIT_BUTTON_SELECTOR);
-            console.log('...clicked submit button.');
-
-            // Wait for the log element and capture its content
-            await page.waitForSelector(STATUS_LOG_SELECTOR, { visible: true });
-            // Add a small delay for content to populate
-            await new Promise(resolve => setTimeout(resolve, 2000)); 
-            const logContent = await page.$eval(STATUS_LOG_SELECTOR, el => el.innerText);
-            console.log(`...captured log: "${logContent}"`);
-            capturedLogs.push({
-              imageName: file.filename,
-              log: logContent || "No log content found."
+            // Since files are sent separately, we need to handle them differently
+            // This example assumes filenames are sent and files are already uploaded
+            // A more robust solution would handle file streaming over websockets or a separate upload endpoint
+            
+            // For this implementation, we'll assume the files are already on the server
+            // from a separate upload step if this were a production app.
+            // Here, we'll just use the filenames passed in the payload.
+            
+            runAutomation(data.payload, ws).catch(err => {
+                console.error("Automation run failed:", err);
+                ws.send(JSON.stringify({ type: 'error', message: err.message }));
             });
         }
+    });
+    ws.on('close', () => console.log('👋 Client disconnected'));
+});
 
-        console.log(`🎉 Successfully submitted ${file.filename}!`);
-        // Don't wait after the last image if we are not cycling
-        if (cycle || i < imageFiles.length - 1) {
-          console.log(`...waiting for ${TIME_INTERVAL_SECONDS}s...`);
-          await new Promise(resolve => setTimeout(resolve, TIME_INTERVAL_SECONDS * 1000));
-        }
-      }
-      if(cycle) {
-        console.log('...cycling back to the first image.');
-      }
-    } while (cycle);
+
+async function runAutomation(options, ws) {
+    const { username, password, interval, displayValue, cycle, imageFiles } = options;
+    ws.send(JSON.stringify({ type: 'log', message: `🤖 Automation task received for display: ${displayValue}. Cycle mode: ${cycle}` }));
     
-    return capturedLogs;
-  } catch (error) {
-    console.error('❌ A critical error occurred during the automation process:', error);
-    if (!cycle) {
-      throw error; // Only throw error if not in cycle mode to avoid crashing the background process
+    const TIME_INTERVAL_SECONDS = parseInt(interval, 10);
+    const ACTION_DELAY_SECONDS = 5;
+
+    let browser = null;
+    try {
+        browser = await puppeteer.launch({ headless: true, args: ['--no-sandbox', '--disable-setuid-sandbox'] });
+        const page = await browser.newPage();
+        await page.setViewport({ width: 1280, height: 800 });
+
+        // Expose a function to Node.js that can be called from the browser context
+        await page.exposeFunction('onLogUpdate', (logText) => {
+            ws.send(JSON.stringify({ type: 'portal-log', message: logText }));
+        });
+
+        await page.goto(LOGIN_URL, { waitUntil: 'networkidle2' });
+        await page.type(USERNAME_SELECTOR, username);
+        await page.type(PASSWORD_SELECTOR, password);
+        await Promise.all([page.waitForNavigation({ waitUntil: 'networkidle2' }), page.click(LOGIN_BUTTON_SELECTOR)]);
+        ws.send(JSON.stringify({ type: 'log', message: '✅ Login Successful!' }));
+
+        await page.waitForSelector(DROPDOWN_SELECTOR);
+        await page.select(DROPDOWN_SELECTOR, displayValue);
+        ws.send(JSON.stringify({ type: 'log', message: `✅ Display "${displayValue}" selected.` }));
+        await new Promise(resolve => setTimeout(resolve, ACTION_DELAY_SECONDS * 1000));
+
+        // Set up the MutationObserver to watch the log div
+        await page.evaluate((selector) => {
+            const targetNode = document.querySelector(selector);
+            if (targetNode) {
+                const observer = new MutationObserver(mutationsList => {
+                    for(const mutation of mutationsList) {
+                        if (mutation.type === 'childList' || mutation.type === 'characterData') {
+                           window.onLogUpdate(targetNode.innerText);
+                        }
+                    }
+                });
+                observer.observe(targetNode, { childList: true, subtree: true, characterData: true });
+            }
+        }, STATUS_LOG_SELECTOR);
+
+        do {
+            for (let i = 0; i < imageFiles.length; i++) {
+                const file = imageFiles[i];
+                const imagePath = path.join(uploadDir, file.filename); // Assumes file is already on server
+                ws.send(JSON.stringify({ type: 'log', message: `--- [${i+1}/${imageFiles.length}] Processing: ${file.filename} ---` }));
+                
+                const fileInput = await page.waitForSelector(HIDDEN_FILE_INPUT_SELECTOR);
+                await fileInput.uploadFile(imagePath);
+                
+                if (UPLOAD_SUBMIT_BUTTON_SELECTOR) {
+                    await page.waitForSelector(UPLOAD_SUBMIT_BUTTON_SELECTOR, { visible: true });
+                    await page.click(UPLOAD_SUBMIT_BUTTON_SELECTOR);
+                }
+                
+                // Wait for the final success message before proceeding
+                await page.waitForFunction(
+                    (selector, successText) => document.querySelector(selector)?.innerText.includes(successText),
+                    { timeout: 60000 }, // 60 second timeout
+                    STATUS_LOG_SELECTOR,
+                    'File uploaded successfully'
+                );
+                ws.send(JSON.stringify({ type: 'log', message: `🎉 Successfully submitted ${file.filename}!` }));
+
+                if (cycle || i < imageFiles.length - 1) {
+                    ws.send(JSON.stringify({ type: 'log', message: `...waiting for ${TIME_INTERVAL_SECONDS}s...` }));
+                    await new Promise(resolve => setTimeout(resolve, TIME_INTERVAL_SECONDS * 1000));
+                }
+            }
+            if(cycle) ws.send(JSON.stringify({ type: 'log', message: '...cycling back to the first image.' }));
+        } while (cycle);
+        
+        ws.send(JSON.stringify({ type: 'done', message: 'All tasks completed successfully.' }));
+
+    } catch (error) {
+        console.error('❌ A critical error occurred during the automation process:', error);
+        ws.send(JSON.stringify({ type: 'error', message: error.message || 'An unknown error occurred.' }));
+    } finally {
+        if (browser) await browser.close();
+        imageFiles.forEach(file => {
+            fs.unlink(path.join(uploadDir, file.filename), err => {
+                if (err) console.error(`Error deleting file: ${file.filename}`, err);
+            });
+        });
+        console.log('...automation task finished and cleaned up temporary files.');
+        ws.close();
     }
-  } finally {
-    if (browser) await browser.close();
-    // In cycle mode, files are never cleaned up. In single-run, they are.
-    if(!cycle) {
-      imageFiles.forEach(file => {
-          fs.unlink(path.join(uploadDir, file.filename), err => {
-              if (err) console.error(`Error deleting file: ${file.filename}`, err);
-          });
-      });
-      console.log('...automation task finished and cleaned up temporary files.');
-    }
-  }
 }
 
-app.listen(port, () => {
-  console.log(`🚀 Automation server listening on port ${port}`);
+// Separate endpoint to handle the initial file uploads
+app.post('/upload-files', upload.array('images'), (req, res) => {
+    console.log(`...received ${req.files.length} files for staging.`);
+    const uploadedFiles = req.files.map(f => ({ filename: f.filename, originalname: f.originalname }));
+    res.status(200).json({ message: 'Files staged successfully', files: uploadedFiles });
+});
+
+// Use the http server to listen, not the express app
+server.listen(port, () => {
+  console.log(`🚀 Automation server with WebSocket listening on port ${port}`);
 });
