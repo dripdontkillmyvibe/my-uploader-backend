@@ -62,7 +62,6 @@ const UPLOAD_SUBMIT_BUTTON_SELECTOR = '#pushBtn1';
 const STATUS_LOG_SELECTOR = '#statuslog';
 
 // --- Shared puppeteer launch options ---
-// The .puppeteerrc.cjs file will now automatically configure the path.
 const puppeteerLaunchOptions = {
     headless: true,
     args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
@@ -107,7 +106,7 @@ app.post('/fetch-display-details', async (req, res) => {
         await Promise.all([page.waitForNavigation({ waitUntil: 'networkidle2' }), page.click(LOGIN_BUTTON_SELECTOR)]);
         await page.waitForSelector(DROPDOWN_SELECTOR);
         await page.select(DROPDOWN_SELECTOR, displayValue);
-        await new Promise(resolve => setTimeout(resolve, 2000)); // Using standard JS timeout
+        await new Promise(resolve => setTimeout(resolve, 2000));
 
         const imageUrl = await page.$eval(PREVIEW_AREA_SELECTOR, el => {
             const style = el.style.backgroundImage;
@@ -142,8 +141,8 @@ app.post('/create-job', upload.array('images'), async (req, res) => {
     const client = await pool.connect();
     try {
         const result = await client.query(
-            `INSERT INTO jobs (user_id, portal_credentials, images, settings, status, progress)
-             VALUES ($1, $2, $3, $4, 'queued', 'Job created and waiting to be processed.') RETURNING id;`,
+            `INSERT INTO jobs (user_id, portal_credentials, images, settings, status, progress, logs)
+             VALUES ($1, $2, $3, $4, 'queued', 'Job created and waiting to be processed.', NULL) RETURNING id;`,
             [
                 userId,
                 JSON.stringify({ username: portalUser, password: portalPass }),
@@ -179,6 +178,32 @@ app.get('/job-status/:userId', async (req, res) => {
     }
 });
 
+// NEW: Endpoint to stop a job
+app.post('/stop-job/:jobId', async (req, res) => {
+    const { jobId } = req.params;
+    if (!jobId) {
+        return res.status(400).json({ message: 'Job ID is required.' });
+    }
+    const client = await pool.connect();
+    try {
+        const result = await client.query(
+            `UPDATE jobs SET status = 'cancelled', progress = 'Job cancelled by user.' WHERE id = $1 AND (status = 'running' OR status = 'queued') RETURNING id`,
+            [jobId]
+        );
+        if (result.rowCount > 0) {
+            console.log(`Job ${jobId} has been marked for cancellation.`);
+            res.status(200).json({ message: 'Job cancellation request sent successfully.' });
+        } else {
+            res.status(404).json({ message: 'Job not found or already completed/failed.' });
+        }
+    } catch (error) {
+        console.error(`Error stopping job ${jobId}:`, error);
+        res.status(500).json({ message: 'Failed to stop job.' });
+    } finally {
+        client.release();
+    }
+});
+
 // --- Worker Logic ---
 async function processJob(job) {
     const client = await pool.connect();
@@ -204,6 +229,14 @@ async function processJob(job) {
 
         do {
           for (let i = 0; i < images.length; i++) {
+              // --- CANCELLATION CHECK ---
+              const jobCheckResult = await client.query('SELECT status FROM jobs WHERE id = $1', [job.id]);
+              if (jobCheckResult.rows[0].status !== 'running') {
+                  console.log(`Job ${job.id} status is now '${jobCheckResult.rows[0].status}'. Halting execution.`);
+                  return; // Exit the function entirely.
+              }
+              // --- END CANCELLATION CHECK ---
+
               const image = images[i];
               const progressMessage = `Uploading image ${i + 1} of ${images.length}: ${image.originalname}`;
               await client.query(`UPDATE jobs SET progress = $1 WHERE id = $2`, [progressMessage, job.id]);
@@ -211,29 +244,27 @@ async function processJob(job) {
               const fileInput = await page.waitForSelector(HIDDEN_FILE_INPUT_SELECTOR);
               await fileInput.uploadFile(image.path);
               
-              // Wait for the upload button to be enabled.
               await page.waitForFunction(
                 (selector) => {
                   const el = document.querySelector(selector);
                   return el && !el.disabled;
                 },
-                { timeout: 15000 }, // Increased timeout
+                { timeout: 15000 },
                 UPLOAD_SUBMIT_BUTTON_SELECTOR
               );
 
-              // Retry clicking mechanism to handle transient overlays
               let clickSuccessful = false;
-              for (let attempt = 0; attempt < 10; attempt++) { // Increased retries
+              for (let attempt = 0; attempt < 10; attempt++) {
                   try {
                       await page.click(UPLOAD_SUBMIT_BUTTON_SELECTOR);
                       clickSuccessful = true;
-                      break; // Exit loop if click is successful
+                      break;
                   } catch (e) {
                       if (e.message.includes('not clickable')) {
                           console.log(`Attempt ${attempt + 1}: Upload button not clickable, retrying...`);
-                          await new Promise(resolve => setTimeout(resolve, 1000)); // Increased delay
+                          await new Promise(resolve => setTimeout(resolve, 1000));
                       } else {
-                          throw e; // Re-throw other errors
+                          throw e;
                       }
                   }
               }
@@ -242,12 +273,10 @@ async function processJob(job) {
                   throw new Error(`The upload button was enabled but not clickable after 10 retries.`);
               }
               
-              // Wait for network activity to settle after the upload.
               await page.waitForNavigation({ waitUntil: 'networkidle0', timeout: 60000 }).catch(() => {
                   console.log('No navigation after upload click, which is expected for AJAX updates. Continuing...');
               });
 
-              // Scrape the status log from the portal
               try {
                 await page.waitForSelector(STATUS_LOG_SELECTOR, { timeout: 5000 });
                 const logs = await page.$eval(STATUS_LOG_SELECTOR, el => el.innerHTML);
@@ -256,9 +285,7 @@ async function processJob(job) {
                 console.log('Could not find status log, maybe the page is slow to update.');
               }
               
-              // FIX: Correctly calculate interval in milliseconds (minutes * 60 * 1000)
-              const waitTime = (parseInt(settings.interval, 10) || 30) * 60 * 1000;
-              // Only wait if it's not the last image, unless we are cycling
+              const waitTime = (parseInt(settings.interval, 10) || 0) * 60 * 1000;
               if (i < images.length - 1 || settings.cycle) { 
                 await new Promise(resolve => setTimeout(resolve, waitTime));
               }
@@ -268,7 +295,6 @@ async function processJob(job) {
         await client.query("UPDATE jobs SET status = 'completed', progress = 'All images uploaded successfully.' WHERE id = $1", [job.id]);
     } catch (error) {
         console.error(`Error processing job ${job.id}:`, error);
-        // Provide a more user-friendly error message in the database.
         const errorMessage = error.message.includes('click') || error.message.includes('clickable')
             ? `A button on the page was not clickable. The website layout may have changed or an overlay was present. (Selector: ${UPLOAD_SUBMIT_BUTTON_SELECTOR})`
             : error.message;
@@ -285,8 +311,6 @@ async function processJob(job) {
 async function checkAndProcessJobs() {
     const client = await pool.connect();
     try {
-        // Atomically find a queued job and update its status to 'running'.
-        // This prevents multiple workers from picking up the same job.
         const query = `
             UPDATE jobs
             SET status = 'running', progress = 'Starting job processing...'
@@ -305,7 +329,6 @@ async function checkAndProcessJobs() {
         if (rows.length > 0) {
             const job = rows[0];
             console.log(`Picked up job ${job.id} to process.`);
-            // Process the job in the background. Don't await it here.
             processJob(job).catch(err => {
                 console.error(`Unhandled exception in processJob for job ${job.id}:`, err);
             });
@@ -319,7 +342,7 @@ async function checkAndProcessJobs() {
 
 // Start the server after DB initialization
 initializeDb().then(() => {
-    setInterval(checkAndProcessJobs, 5000); // Check for jobs more frequently
+    setInterval(checkAndProcessJobs, 5000);
     app.listen(port, () => {
         console.log(`🚀 Stateful automation server listening on port ${port}`);
     });
