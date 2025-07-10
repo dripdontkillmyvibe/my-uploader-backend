@@ -230,16 +230,19 @@ async function processJob(job) {
                   return;
               }
 
-              // FIX: Re-select the display inside the loop to ensure the page state is correct for each upload.
+              if (i > 0) {
+                  await client.query("UPDATE jobs SET progress = 'Refreshing page for next upload...' WHERE id = $1", [job.id]);
+                  await page.reload({ waitUntil: 'networkidle2' });
+              }
+
               await client.query("UPDATE jobs SET progress = 'Selecting display...' WHERE id = $1", [job.id]);
-              await page.waitForSelector(DROPDOWN_SELECTOR);
+              await page.waitForSelector(DROPDOWN_SELECTOR, { timeout: 30000 });
               await page.select(DROPDOWN_SELECTOR, settings.displayValue);
 
               const image = images[i];
               const progressMessage = `Uploading image ${i + 1} of ${images.length}: ${image.originalname}`;
               await client.query(`UPDATE jobs SET progress = $1 WHERE id = $2`, [progressMessage, job.id]);
               
-              // FIX: Wait for the file input selector to be available after selecting the display.
               const fileInput = await page.waitForSelector(HIDDEN_FILE_INPUT_SELECTOR, { timeout: 30000 });
               await fileInput.uploadFile(image.path);
               
@@ -272,8 +275,13 @@ async function processJob(job) {
                   throw new Error(`The upload button was enabled but not clickable after 10 retries.`);
               }
               
-              await page.waitForNavigation({ waitUntil: 'networkidle0', timeout: 60000 }).catch(() => {
-                  console.log('No navigation after upload click, which is expected for AJAX updates. Continuing...');
+              await client.query("UPDATE jobs SET progress = 'Waiting for upload confirmation...' WHERE id = $1", [job.id]);
+              await page.waitForFunction(
+                (selector) => document.querySelector(selector)?.innerText.toLowerCase().includes('successfully downloaded'),
+                { timeout: 90000 },
+                STATUS_LOG_SELECTOR
+              ).catch(e => {
+                  throw new Error('Timed out waiting for upload confirmation message in the status log.');
               });
 
               try {
@@ -285,7 +293,8 @@ async function processJob(job) {
               }
               
               const waitTime = (parseInt(settings.interval, 10) || 0) * 60 * 1000;
-              if (i < images.length - 1 || settings.cycle) { 
+              if (waitTime > 0 && (i < images.length - 1 || settings.cycle)) { 
+                await client.query(`UPDATE jobs SET progress = 'Waiting for ${settings.interval} minute(s)...' WHERE id = $1`, [job.id]);
                 await new Promise(resolve => setTimeout(resolve, waitTime));
               }
           }
