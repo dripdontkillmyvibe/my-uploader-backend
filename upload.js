@@ -43,7 +43,6 @@ const PREVIEW_AREA_SELECTOR = '#preview1';
 
 // Endpoint to fetch initial display options
 app.post('/fetch-displays', async (req, res) => {
-    // ... (This endpoint remains the same as the previous version)
     const { username, password } = req.body;
     if (!username || !password) return res.status(400).json({ message: 'Username and password are required.' });
     console.log('🤖 Fetching displays for user:', username);
@@ -111,19 +110,6 @@ wss.on('connection', ws => {
     ws.on('message', async message => {
         const data = JSON.parse(message);
         if (data.type === 'start-automation') {
-            // Use multer middleware manually for WebSocket requests
-            const mockReq = { body: data.payload, files: [] };
-            const mockRes = {}; // Not used
-            const uploader = upload.array('images');
-
-            // Since files are sent separately, we need to handle them differently
-            // This example assumes filenames are sent and files are already uploaded
-            // A more robust solution would handle file streaming over websockets or a separate upload endpoint
-            
-            // For this implementation, we'll assume the files are already on the server
-            // from a separate upload step if this were a production app.
-            // Here, we'll just use the filenames passed in the payload.
-            
             runAutomation(data.payload, ws).catch(err => {
                 console.error("Automation run failed:", err);
                 ws.send(JSON.stringify({ type: 'error', message: err.message }));
@@ -147,7 +133,6 @@ async function runAutomation(options, ws) {
         const page = await browser.newPage();
         await page.setViewport({ width: 1280, height: 800 });
 
-        // Expose a function to Node.js that can be called from the browser context
         await page.exposeFunction('onLogUpdate', (logText) => {
             ws.send(JSON.stringify({ type: 'portal-log', message: logText }));
         });
@@ -163,7 +148,6 @@ async function runAutomation(options, ws) {
         ws.send(JSON.stringify({ type: 'log', message: `✅ Display "${displayValue}" selected.` }));
         await new Promise(resolve => setTimeout(resolve, ACTION_DELAY_SECONDS * 1000));
 
-        // Set up the MutationObserver to watch the log div
         await page.evaluate((selector) => {
             const targetNode = document.querySelector(selector);
             if (targetNode) {
@@ -181,7 +165,7 @@ async function runAutomation(options, ws) {
         do {
             for (let i = 0; i < imageFiles.length; i++) {
                 const file = imageFiles[i];
-                const imagePath = path.join(uploadDir, file.filename); // Assumes file is already on server
+                const imagePath = path.join(uploadDir, file.filename);
                 ws.send(JSON.stringify({ type: 'log', message: `--- [${i+1}/${imageFiles.length}] Processing: ${file.filename} ---` }));
                 
                 const fileInput = await page.waitForSelector(HIDDEN_FILE_INPUT_SELECTOR);
@@ -192,14 +176,28 @@ async function runAutomation(options, ws) {
                     await page.click(UPLOAD_SUBMIT_BUTTON_SELECTOR);
                 }
                 
-                // Wait for the final success message before proceeding
                 await page.waitForFunction(
                     (selector, successText) => document.querySelector(selector)?.innerText.includes(successText),
-                    { timeout: 60000 }, // 60 second timeout
+                    { timeout: 60000 },
                     STATUS_LOG_SELECTOR,
                     'File uploaded successfully'
                 );
                 ws.send(JSON.stringify({ type: 'log', message: `🎉 Successfully submitted ${file.filename}!` }));
+
+                // NEW: Fetch and send the updated image URL
+                try {
+                    const newImageUrl = await page.$eval(PREVIEW_AREA_SELECTOR, el => {
+                        const style = el.style.backgroundImage;
+                        const match = style.match(/url\("?(.+?)"?\)/);
+                        return match ? match[1] : null;
+                    });
+                    if (newImageUrl) {
+                        const fullUrl = new URL(newImageUrl, LOGIN_URL).href;
+                        ws.send(JSON.stringify({ type: 'image-update', imageUrl: fullUrl }));
+                    }
+                } catch (e) {
+                    ws.send(JSON.stringify({ type: 'log', message: 'Could not retrieve updated image thumbnail.' }));
+                }
 
                 if (cycle || i < imageFiles.length - 1) {
                     ws.send(JSON.stringify({ type: 'log', message: `...waiting for ${TIME_INTERVAL_SECONDS}s...` }));
