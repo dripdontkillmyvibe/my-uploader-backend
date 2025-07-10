@@ -59,6 +59,7 @@ const DROPDOWN_SELECTOR = '#display';
 const PREVIEW_AREA_SELECTOR = '#preview1';
 const HIDDEN_FILE_INPUT_SELECTOR = '#fileInput1';
 const UPLOAD_SUBMIT_BUTTON_SELECTOR = '#pushBtn1';
+const STATUS_LOG_SELECTOR = '#statuslog';
 
 // --- Shared puppeteer launch options ---
 // The .puppeteerrc.cjs file will now automatically configure the path.
@@ -204,7 +205,8 @@ async function processJob(job) {
         do {
           for (let i = 0; i < images.length; i++) {
               const image = images[i];
-              await client.query(`UPDATE jobs SET progress = 'Uploading image ${i + 1} of ${images.length}: ${image.originalname}' WHERE id = $1`, [job.id]);
+              const progressMessage = `Uploading image ${i + 1} of ${images.length}: ${image.originalname}`;
+              await client.query(`UPDATE jobs SET progress = $1 WHERE id = $2`, [progressMessage, job.id]);
               
               const fileInput = await page.waitForSelector(HIDDEN_FILE_INPUT_SELECTOR);
               await fileInput.uploadFile(image.path);
@@ -221,7 +223,7 @@ async function processJob(job) {
 
               // Retry clicking mechanism to handle transient overlays
               let clickSuccessful = false;
-              for (let attempt = 0; attempt < 5; attempt++) {
+              for (let attempt = 0; attempt < 10; attempt++) { // Increased retries
                   try {
                       await page.click(UPLOAD_SUBMIT_BUTTON_SELECTOR);
                       clickSuccessful = true;
@@ -229,7 +231,7 @@ async function processJob(job) {
                   } catch (e) {
                       if (e.message.includes('not clickable')) {
                           console.log(`Attempt ${attempt + 1}: Upload button not clickable, retrying...`);
-                          await new Promise(resolve => setTimeout(resolve, 500)); // Wait before retrying
+                          await new Promise(resolve => setTimeout(resolve, 1000)); // Increased delay
                       } else {
                           throw e; // Re-throw other errors
                       }
@@ -237,11 +239,29 @@ async function processJob(job) {
               }
 
               if (!clickSuccessful) {
-                  throw new Error(`The upload button was enabled but not clickable after several retries. It might be covered by another element.`);
+                  throw new Error(`The upload button was enabled but not clickable after 10 retries.`);
               }
               
-              const waitTime = (parseInt(settings.interval, 10) || 30) * 1000;
-              await new Promise(resolve => setTimeout(resolve, waitTime));
+              // Wait for network activity to settle after the upload.
+              await page.waitForNavigation({ waitUntil: 'networkidle0', timeout: 60000 }).catch(() => {
+                  console.log('No navigation after upload click, which is expected for AJAX updates. Continuing...');
+              });
+
+              // Scrape the status log from the portal
+              try {
+                await page.waitForSelector(STATUS_LOG_SELECTOR, { timeout: 5000 });
+                const logs = await page.$eval(STATUS_LOG_SELECTOR, el => el.innerHTML);
+                await client.query("UPDATE jobs SET logs = $1 WHERE id = $2", [logs, job.id]);
+              } catch (logError) {
+                console.log('Could not find status log, maybe the page is slow to update.');
+              }
+              
+              // FIX: Correctly calculate interval in milliseconds (minutes * 60 * 1000)
+              const waitTime = (parseInt(settings.interval, 10) || 30) * 60 * 1000;
+              // Only wait if it's not the last image, unless we are cycling
+              if (i < images.length - 1 || settings.cycle) { 
+                await new Promise(resolve => setTimeout(resolve, waitTime));
+              }
           }
         } while (settings.cycle);
 
