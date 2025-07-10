@@ -3,7 +3,7 @@ const cors = require('cors');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
-const puppeteer = require('puppeteer-core'); // Use puppeteer-core
+const puppeteer = require('puppeteer');
 const { Pool } = require('pg');
 
 const app = express();
@@ -61,10 +61,8 @@ const HIDDEN_FILE_INPUT_SELECTOR = '#fileInput1';
 const UPLOAD_SUBMIT_BUTTON_SELECTOR = '#pushBtn1';
 
 // --- Shared puppeteer launch options ---
-// Construct the path to the executable downloaded by the build script
-const executablePath = path.join(__dirname, '.local-chromium', 'chrome-linux64', 'chrome');
+// The .puppeteerrc.cjs file will now automatically configure the path.
 const puppeteerLaunchOptions = {
-    executablePath, // Explicitly set the path
     headless: true,
     args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
 };
