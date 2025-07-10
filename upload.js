@@ -276,20 +276,27 @@ async function processJob(job) {
               }
               
               await client.query("UPDATE jobs SET progress = 'Waiting for upload confirmation...' WHERE id = $1", [job.id]);
+              
+              // FIX: Wait for either a success or failure message in the log
               await page.waitForFunction(
-                (selector) => document.querySelector(selector)?.innerText.toLowerCase().includes('successfully downloaded'),
-                { timeout: 90000 },
+                (selector) => {
+                    const logEl = document.querySelector(selector);
+                    if (!logEl) return false;
+                    const logText = logEl.innerText.toLowerCase();
+                    return logText.includes('successfully downloaded') || logText.includes('failed') || logText.includes('error');
+                },
+                { timeout: 120000 }, // Increased timeout to 2 minutes
                 STATUS_LOG_SELECTOR
               ).catch(e => {
-                  throw new Error('Timed out waiting for upload confirmation message in the status log.');
+                  throw new Error('Timed out waiting for a confirmation message (success or failure) in the status log.');
               });
 
-              try {
-                await page.waitForSelector(STATUS_LOG_SELECTOR, { timeout: 5000 });
-                const logs = await page.$eval(STATUS_LOG_SELECTOR, el => el.innerHTML);
-                await client.query("UPDATE jobs SET logs = $1 WHERE id = $2", [logs, job.id]);
-              } catch (logError) {
-                console.log('Could not find status log, maybe the page is slow to update.');
+              const logs = await page.$eval(STATUS_LOG_SELECTOR, el => el.innerHTML);
+              await client.query("UPDATE jobs SET logs = $1 WHERE id = $2", [logs, job.id]);
+
+              // Check if the upload actually failed on the portal side
+              if (logs.toLowerCase().includes('failed') || logs.toLowerCase().includes('error')) {
+                  throw new Error('The portal reported an error during the upload. Check the status log for details.');
               }
               
               const waitTime = (parseInt(settings.interval, 10) || 0) * 60 * 1000;
