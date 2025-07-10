@@ -140,9 +140,9 @@ app.post('/create-job', upload.array('images'), async (req, res) => {
 
     const client = await pool.connect();
     try {
-        await client.query(
+        const result = await client.query(
             `INSERT INTO jobs (user_id, portal_credentials, images, settings, status, progress)
-             VALUES ($1, $2, $3, $4, 'queued', 'Job created and waiting to be processed.')`,
+             VALUES ($1, $2, $3, $4, 'queued', 'Job created and waiting to be processed.') RETURNING id;`,
             [
                 userId,
                 JSON.stringify({ username: portalUser, password: portalPass }),
@@ -150,7 +150,8 @@ app.post('/create-job', upload.array('images'), async (req, res) => {
                 JSON.stringify({ interval, cycle: cycle === 'true', displayValue })
             ]
         );
-        res.status(201).json({ message: 'Automation job created successfully.' });
+        const jobId = result.rows[0].id;
+        res.status(201).json({ message: 'Automation job created successfully.', jobId });
     } catch (error) {
         console.error("Error creating job:", error);
         res.status(500).json({ message: 'Failed to create job.' });
@@ -182,22 +183,21 @@ async function processJob(job) {
     const client = await pool.connect();
     let browser = null;
     try {
-        await client.query(`UPDATE jobs SET status = 'running', progress = 'Launching browser...' WHERE id = $1`, [job.id]);
-        
-        browser = await puppeteer.launch(puppeteerLaunchOptions);
-        const page = await browser.newPage();
-        
         const credentials = job.portal_credentials;
         const settings = job.settings;
         const images = job.images;
         
-        await client.query(`UPDATE jobs SET progress = 'Logging into portal...' WHERE id = $1`, [job.id]);
+        await client.query("UPDATE jobs SET progress = 'Logging into portal...' WHERE id = $1", [job.id]);
+        
+        browser = await puppeteer.launch(puppeteerLaunchOptions);
+        const page = await browser.newPage();
+        
         await page.goto(LOGIN_URL, { waitUntil: 'networkidle2' });
         await page.type(USERNAME_SELECTOR, credentials.username);
         await page.type(PASSWORD_SELECTOR, credentials.password);
         await Promise.all([page.waitForNavigation({ waitUntil: 'networkidle2' }), page.click(LOGIN_BUTTON_SELECTOR)]);
         
-        await client.query(`UPDATE jobs SET progress = 'Selecting display...' WHERE id = $1`, [job.id]);
+        await client.query("UPDATE jobs SET progress = 'Selecting display...' WHERE id = $1", [job.id]);
         await page.waitForSelector(DROPDOWN_SELECTOR);
         await page.select(DROPDOWN_SELECTOR, settings.displayValue);
 
@@ -210,19 +210,17 @@ async function processJob(job) {
               await fileInput.uploadFile(image.path);
               await page.click(UPLOAD_SUBMIT_BUTTON_SELECTOR);
               
-              // Wait for the interval
-              const waitTime = (settings.interval || 30) * 1000; // Default to 30s if not set
+              const waitTime = (parseInt(settings.interval, 10) || 30) * 1000;
               await new Promise(resolve => setTimeout(resolve, waitTime));
           }
         } while (settings.cycle);
 
-        await client.query(`UPDATE jobs SET status = 'completed', progress = 'All images uploaded successfully.' WHERE id = $1`, [job.id]);
+        await client.query("UPDATE jobs SET status = 'completed', progress = 'All images uploaded successfully.' WHERE id = $1", [job.id]);
     } catch (error) {
         console.error(`Error processing job ${job.id}:`, error);
-        await client.query(`UPDATE jobs SET status = 'failed', progress = 'An error occurred: ${error.message}' WHERE id = $1`, [job.id]);
+        await client.query("UPDATE jobs SET status = 'failed', progress = $2 WHERE id = $1", [job.id, `An error occurred: ${error.message}`]);
     } finally {
         if (browser) await browser.close();
-        // Clean up uploaded files
         job.images.forEach(img => fs.unlink(img.path, (err) => {
             if(err) console.error("Error deleting file:", img.path, err);
         }));
@@ -230,16 +228,36 @@ async function processJob(job) {
     }
 }
 
-async function checkJobs() {
+async function checkAndProcessJobs() {
     const client = await pool.connect();
     try {
-        const result = await client.query(`SELECT * FROM jobs WHERE status = 'queued' ORDER BY created_at ASC LIMIT 1`);
-        if (result.rows.length > 0) {
-            const job = result.rows[0];
-            console.log(`Found job ${job.id} to process.`);
-            // Don't wait for the job to finish, let it run in the background
-            processJob(job);
+        // Atomically find a queued job and update its status to 'running'.
+        // This prevents multiple workers from picking up the same job.
+        const query = `
+            UPDATE jobs
+            SET status = 'running', progress = 'Starting job processing...'
+            WHERE id = (
+                SELECT id
+                FROM jobs
+                WHERE status = 'queued'
+                ORDER BY created_at ASC
+                FOR UPDATE SKIP LOCKED
+                LIMIT 1
+            )
+            RETURNING *;
+        `;
+        const { rows } = await client.query(query);
+
+        if (rows.length > 0) {
+            const job = rows[0];
+            console.log(`Picked up job ${job.id} to process.`);
+            // Process the job in the background. Don't await it here.
+            processJob(job).catch(err => {
+                console.error(`Unhandled exception in processJob for job ${job.id}:`, err);
+            });
         }
+    } catch (error) {
+        console.error("Error in job checker:", error);
     } finally {
         client.release();
     }
@@ -247,7 +265,7 @@ async function checkJobs() {
 
 // Start the server after DB initialization
 initializeDb().then(() => {
-    setInterval(checkJobs, 30000); 
+    setInterval(checkAndProcessJobs, 5000); // Check for jobs more frequently
     app.listen(port, () => {
         console.log(`🚀 Stateful automation server listening on port ${port}`);
     });
