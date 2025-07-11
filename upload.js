@@ -5,7 +5,6 @@ const path = require('path');
 const fs = require('fs');
 const puppeteer = require('puppeteer');
 const { Pool } = require('pg');
-const GtfsRealtimeBindings = require('gtfs-realtime-bindings');
 
 const app = express();
 const port = process.env.PORT || 3001;
@@ -67,105 +66,6 @@ const puppeteerLaunchOptions = {
     headless: true,
     args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
 };
-
-// --- MTA GTFS Configuration ---
-// IMPORTANT: You must get your own API key from the MTA developer portal: https://api.mta.info/
-const MTA_API_KEY = process.env.MTA_API_KEY || 'YOUR_MTA_API_KEY_HERE';
-const MTA_FEED_URL = `https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs`;
-
-// --- Widget Generation ---
-async function generateSubwayWidget() {
-    let browser;
-    try {
-        const response = await fetch(MTA_FEED_URL, { headers: { 'x-api-key': MTA_API_KEY } });
-        if (!response.ok) {
-            throw new Error(`Failed to fetch MTA data: ${response.statusText}`);
-        }
-        const buffer = await response.arrayBuffer();
-        const feed = GtfsRealtimeBindings.transit_realtime.FeedMessage.decode(new Uint8Array(buffer));
-        
-        // Filter for a specific station (e.g., Times Square - 42nd St) and a few lines
-        const stationId = 'R16'; // Times Square
-        const relevantLines = ['1', '2', '3'];
-        const departures = { north: [], south: [] };
-
-        feed.entity.forEach(entity => {
-            if (entity.tripUpdate) {
-                const routeId = entity.tripUpdate.trip.routeId;
-                if (relevantLines.includes(routeId)) {
-                    entity.tripUpdate.stopTimeUpdate.forEach(update => {
-                        if (update.stopId.startsWith(stationId)) {
-                            const direction = update.stopId.endsWith('N') ? 'north' : 'south';
-                            const arrivalTime = new Date(update.arrival.time.low * 1000);
-                            if (arrivalTime > new Date() && departures[direction].length < 5) {
-                                departures[direction].push({
-                                    line: routeId,
-                                    time: arrivalTime,
-                                });
-                            }
-                        }
-                    });
-                }
-            }
-        });
-
-        Object.keys(departures).forEach(dir => departures[dir].sort((a, b) => a.time - b.time));
-
-        // Generate HTML for the widget
-        const htmlContent = `
-            <html>
-                <head>
-                    <style>
-                        body { font-family: 'Proxima Nova', sans-serif; background-color: #17479E; color: white; padding: 20px; margin: 0; }
-                        h1 { font-size: 48px; margin: 0 0 10px 0; border-bottom: 2px solid white; padding-bottom: 10px; }
-                        .direction { margin-top: 20px; }
-                        h2 { font-size: 36px; margin: 0 0 10px 0; }
-                        .departure { display: flex; align-items: center; font-size: 28px; margin-bottom: 8px; }
-                        .line { background-color: white; color: #17479E; border-radius: 50%; width: 40px; height: 40px; display: inline-flex; align-items: center; justify-content: center; font-weight: bold; margin-right: 15px; }
-                    </style>
-                </head>
-                <body>
-                    <h1>Times Square - 42 St</h1>
-                    <div style="display: flex; justify-content: space-between;">
-                        <div class="direction">
-                            <h2>Northbound</h2>
-                            ${departures.north.map(d => `<div class="departure"><span class="line">${d.line}</span> ${d.time.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}</div>`).join('')}
-                        </div>
-                        <div class="direction">
-                            <h2>Southbound</h2>
-                            ${departures.south.map(d => `<div class="departure"><span class="line">${d.line}</span> ${d.time.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}</div>`).join('')}
-                        </div>
-                    </div>
-                </body>
-            </html>
-        `;
-
-        browser = await puppeteer.launch(puppeteerLaunchOptions);
-        const page = await browser.newPage();
-        await page.setViewport({ width: 2560, height: 1440 });
-        await page.setContent(htmlContent);
-        const imageBuffer = await page.screenshot();
-        return imageBuffer;
-
-    } finally {
-        if (browser) await browser.close();
-    }
-}
-
-app.get('/api/subway-widget', async (req, res) => {
-    try {
-        if (MTA_API_KEY === 'YOUR_MTA_API_KEY_HERE') {
-            return res.status(500).json({ message: 'MTA API key is not configured on the server.' });
-        }
-        const imageBuffer = await generateSubwayWidget();
-        res.set('Content-Type', 'image/png');
-        res.send(imageBuffer);
-    } catch (error) {
-        console.error('Error generating subway widget:', error);
-        res.status(500).json({ message: `Failed to generate subway widget: ${error.message}` });
-    }
-});
-
 
 // --- Interactive API Endpoints ---
 app.post('/fetch-displays', async (req, res) => {
