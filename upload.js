@@ -222,6 +222,8 @@ async function processJob(job) {
         await page.type(PASSWORD_SELECTOR, credentials.password);
         await Promise.all([page.waitForNavigation({ waitUntil: 'networkidle2' }), page.click(LOGIN_BUTTON_SELECTOR)]);
         
+        let isFirstImageOfJob = true;
+
         do {
           for (let i = 0; i < images.length; i++) {
               const jobCheckResult = await client.query('SELECT status FROM jobs WHERE id = $1', [job.id]);
@@ -230,10 +232,11 @@ async function processJob(job) {
                   return;
               }
 
-              if (i > 0) {
+              if (!isFirstImageOfJob) {
                   await client.query("UPDATE jobs SET progress = 'Refreshing page for next upload...' WHERE id = $1", [job.id]);
                   await page.reload({ waitUntil: 'networkidle2' });
               }
+              isFirstImageOfJob = false;
 
               await client.query("UPDATE jobs SET progress = 'Selecting display...' WHERE id = $1", [job.id]);
               await page.waitForSelector(DROPDOWN_SELECTOR, { timeout: 30000 });
